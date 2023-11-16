@@ -29,8 +29,15 @@ void *monitorThread(void *arg){
 
 
 void *diskThread(void *arg){
+    char *s = arg;
 
-	printf("disk_Thread");
+    printf("%s", s);
+
+    while (1) {
+        posix_sleep_ms(5000);
+    }
+
+    return 0;
 }
 
 

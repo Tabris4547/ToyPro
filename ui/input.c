@@ -75,20 +75,8 @@ void *sensor_thread(void* arg)
     int i = 0;
 
     printf("%s", s);
-
     while (1) {
-        i = 0;
-        // 여기서 뮤텍스
-        // 과제를 억지로 만들기 위해 한 글자씩 출력 후 슬립
-	pthread_mutex_lock(&g_mutex);
-        while (global_message[i] != NULL) {
-            printf("%c", global_message[i]);
-            fflush(stdout);
-            posix_sleep_ms(500);
-            i++;
-        }
         posix_sleep_ms(5000);
-	pthread_mutex_unlock(&g_mutex);
     }
 
     return 0;
