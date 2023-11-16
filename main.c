@@ -47,9 +47,9 @@ int main()
 
     printf("메인 함수입니다.\n");
     printf("시스템 서버를 생성합니다.\n");
-    //spid = create_system_server();
+    spid = create_system_server();
     printf("웹 서버를 생성합니다.\n");
-    
+    wpid = create_web_server();
     printf("입력 프로세스를 생성합니다.\n");
     ipid = create_input();
     printf("GUI를 생성합니다.\n");
@@ -62,3 +62,4 @@ int main()
 
     return 0;
 }
+

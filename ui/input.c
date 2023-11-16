@@ -19,6 +19,7 @@
 
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
+#define TOY_BUFFSIZE 1024
 
 typedef struct _sig_ucontext {
     unsigned long uc_flags;
@@ -27,6 +28,9 @@ typedef struct _sig_ucontext {
     struct sigcontext uc_mcontext;
     sigset_t uc_sigmask;
 } sig_ucontext_t;
+
+static pthread_mutex_t global_message_mutex  = PTHREAD_MUTEX_INITIALIZER;
+static char global_message[TOY_BUFFSIZE];
 
 void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
   void * array[50];
@@ -63,40 +67,41 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
   exit(EXIT_FAILURE);
 }
 
-pthread_mutex_t g_mutex;
-static char global_message[TOY_TOK_BUFSIZE]="MUTEX_TEST\n";
 /*
  *  sensor thread
  */
 void *sensor_thread(void* arg)
 {
-    char saved_message[TOY_TOK_BUFSIZE];
     char *s = arg;
-    int i = 0;
 
     printf("%s", s);
+
     while (1) {
         posix_sleep_ms(5000);
     }
 
     return 0;
 }
+
 /*
  *  command thread
  */
 
 int toy_send(char **args);
+int toy_mutex(char **args);
 int toy_shell(char **args);
 int toy_exit(char **args);
 
 char *builtin_str[] = {
     "send",
+    "mu",
     "sh",
     "exit"
 };
 
 int (*builtin_func[]) (char **) = {
     &toy_send,
+    &toy_mutex,
     &toy_shell,
     &toy_exit
 };
@@ -110,6 +115,19 @@ int toy_send(char **args)
 {
     printf("send message: %s\n", args[1]);
 
+    return 1;
+}
+
+int toy_mutex(char **args)
+{
+    if (args[1] == NULL) {
+        return 1;
+    }
+
+    printf("save message: %s\n", args[1]);
+    pthread_mutex_lock(&global_message_mutex);
+    strcpy(global_message, args[1]);
+    pthread_mutex_unlock(&global_message_mutex);
     return 1;
 }
 
@@ -131,10 +149,8 @@ int toy_shell(char **args)
         exit(EXIT_FAILURE);
     } else if (pid < 0) {
         perror("toy");
-    } else
-{
-        do
-        {
+    } else {
+        do {
             waitpid(pid, &status, WUNTRACED);
         } while (!WIFEXITED(status) && !WIFSIGNALED(status));
     }
@@ -219,7 +235,6 @@ void toy_loop(void)
         line = toy_read_line();
         args = toy_split_line(line);
         status = toy_execute(args);
-
         free(line);
         free(args);
     } while (status);
@@ -241,6 +256,7 @@ int input()
     int retcode;
     struct sigaction sa;
     pthread_t command_thread_tid, sensor_thread_tid;
+    int i;
 
     printf("나 input 프로세스!\n");
 
@@ -253,13 +269,11 @@ int input()
     sigaction(SIGSEGV, &sa, NULL); /* ignore whether it works or not */
 
    /* 여기서 스레드를 생성한다. */
-    char command_line[20]="command thread";
-    char sensor_line[20]="sensor thread";
-    pthread_create(&command_thread_tid,NULL,command_thread,(void*)command_line);
-    pthread_create(&sensor_thread_tid,NULL,sensor_thread,(void*)sensor_line);
+    retcode = pthread_create(&command_thread_tid, NULL, command_thread, "command thread\n");
+    assert(retcode == 0);
+    retcode = pthread_create(&sensor_thread_tid, NULL, sensor_thread, "sensor thread\n");
+    assert(retcode == 0);
 
-    pthread_join(command_thread_tid,NULL);
-    pthread_join(sensor_thread_tid,NULL);
     while (1) {
         sleep(1);
     }
@@ -290,3 +304,4 @@ int create_input()
 
     return 0;
 }
+
