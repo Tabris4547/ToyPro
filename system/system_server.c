@@ -1,22 +1,28 @@
-#include <assert.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <sys/prctl.h>
 #include <signal.h>
 #include <sys/time.h>
 #include <time.h>
+#include <pthread.h>
+#include <assert.h>
+#include <mqueue.h>
+#include <assert.h>
 
 #include <system_server.h>
 #include <gui.h>
 #include <input.h>
 #include <web_server.h>
 #include <camera_HAL.h>
-
+#include <toy_message.h>
 pthread_mutex_t system_loop_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  system_loop_cond  = PTHREAD_COND_INITIALIZER;
 bool            system_loop_exit = false;    ///< true if main loop should exit
 
 static int toy_timer = 0;
+static mqd_t watchdog_queue;
+static mqd_t monitor_queue;
+static mqd_t disk_queue;
+static mqd_t camera_queue;
 
 void signal_exit(void);
 
@@ -49,11 +55,18 @@ int posix_sleep_ms(unsigned int timeout_ms)
 void *watchdog_thread(void* arg)
 {
     char *s = arg;
-
+    int mqretcode;
+    toy_msg_t msg;
     printf("%s", s);
 
     while (1) {
-        posix_sleep_ms(5000);
+	mqretcode=(int)mq_receive(watchdog_queue,(void*)&msg,sizeof(toy_msg_t),0);
+        if(mqretcode>=0){
+		printf("메세지 도착\n");
+		printf("msg.type:%d\n",msg.type);
+		printf("msg.param1:%d\n",msg.param1);
+		printf("msg.parem2:%d\n",msg.param2);
+	}
     }
 
     return 0;
@@ -62,13 +75,20 @@ void *watchdog_thread(void* arg)
 void *monitor_thread(void* arg)
 {
     char *s = arg;
-
+    int mqretcode;
+    toy_msg_t msg;
     printf("%s", s);
 
+     
     while (1) {
-        posix_sleep_ms(5000);
+	mqretcode=(int)mq_receive(monitor_queue,(void*)&msg,sizeof(toy_msg_t),0);
+        if(mqretcode>=0){
+		printf("메세지 도착\n");
+		printf("msg.type:%d\n",msg.type);
+		printf("msg.param1:%d\n",msg.param1);
+		printf("msg.parem2:%d\n",msg.param2);
+	}
     }
-
     return 0;
 }
 
@@ -77,11 +97,21 @@ void *disk_service_thread(void* arg)
     char *s = arg;
     FILE* apipe;
     char buf[1024];
-    char cmd[]="df -h ./" ;
+    char cmd[]="df -h ./";
+
+    int mqretcode;
+    toy_msg_t msg;
 
     printf("%s", s);
 
     while (1) {
+	mqretcode=(int)mq_receive(disk_queue,(void*)&msg,sizeof(toy_msg_t),0);
+        if(mqretcode>=0){
+        	printf("메세지 도착\n");
+        	printf("msg.type:%d\n",msg.type);
+       	 	printf("msg.param1:%d\n",msg.param1);
+        	printf("msg.parem2:%d\n",msg.param2);
+	}
         /* popen 사용하여 10초마다 disk 잔여량 출력
          * popen으로 shell을 실행하면 성능과 보안 문제가 있음
          * 향후 파일 관련 시스템 콜 시간에 개선,
@@ -103,17 +133,30 @@ void *disk_service_thread(void* arg)
 
 void *camera_service_thread(void* arg)
 {
+
     char *s = arg;
+    FILE* apipe;
+
+    int mqretcode;
+    toy_msg_t msg;
 
     printf("%s", s);
 
    toy_camera_open();
-   toy_camera_take_picture();
 
+    
     while (1) {
-        posix_sleep_ms(5000);
+	mqretcode=(int)mq_receive(camera_queue,(void*)&msg,sizeof(toy_msg_t),0);
+        if(mqretcode>=0){
+        	printf("메세지 도착\n");
+        	printf("msg.type:%d\n",msg.type);
+       	 	printf("msg.param1:%d\n",msg.param1);
+        	printf("msg.parem2:%d\n",msg.param2);
+		if(msg.type==1){
+			toy_camera_take_picture();
+		}
+	}
     }
-
     return 0;
 }
 
@@ -140,7 +183,30 @@ int system_server()
     signal(SIGALRM, timer_expire_signal_handler);
     /* 10초 타이머 등록 */
     set_periodic_timer(10, 0);
-
+    watchdog_queue = mq_open("/watchdog_queue", O_RDWR);
+    if (watchdog_queue == (mqd_t)-1){
+        perror("mq_open failure");
+        printf("ERRno = %d\n", errno);
+        exit(0);
+    }
+    monitor_queue = mq_open("/monitor_queue", O_RDWR);
+    if (monitor_queue == (mqd_t)-1){
+        perror("mq_open failure");
+        printf("ERRno = %d\n", errno);
+        exit(0);
+    }
+    disk_queue = mq_open("/disk_queue", O_RDWR);
+    if (disk_queue == (mqd_t)-1){
+        perror("mq_open failure");
+        printf("ERRno = %d\n", errno);
+        exit(0);
+    }
+    camera_queue = mq_open("/camera_queue", O_RDWR);
+    if (camera_queue == (mqd_t)-1){
+        perror("mq_open failure");
+        printf("ERRno = %d\n", errno);
+        exit(0);
+    }
     /* 스레드를 생성한다. */
     retcode = pthread_create(&watchdog_thread_tid, NULL, watchdog_thread, "watchdog thread\n");
     assert(retcode == 0);
