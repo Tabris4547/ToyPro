@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <mqueue.h>
-
+#include<semaphore.h>
 #include <system_server.h>
 #include <gui.h>
 #include <input.h>
@@ -298,8 +298,7 @@ int input()
 
     sigaction(SIGSEGV, &sa, NULL); /* ignore whether it works or not */
 
-    /* 메시지 큐를 오픈 한다. */
-    watchdog_queue = mq_open("/watchdog_queue", O_RDWR);
+    
     assert(watchdog_queue != -1);
     monitor_queue = mq_open("/monitor_queue", O_RDWR);
     assert(monitor_queue != -1);
