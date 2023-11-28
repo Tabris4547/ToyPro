@@ -7,6 +7,16 @@
 #include <sys/time.h>
 #include <time.h>
 #include <mqueue.h>
+#include <sys/inotify.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <sys/sysmacros.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <stdint.h>
+#include <string.h>
+#include <dirent.h>
 
 #include <system_server.h>
 #include <gui.h>
@@ -15,7 +25,8 @@
 #include <camera_HAL.h>
 #include <toy_message.h>
 #include <shared_memory.h>
-
+#define BUF_LEN 1024
+#define TOY_TEST_FS "./fs"
 
 pthread_mutex_t system_loop_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  system_loop_cond  = PTHREAD_COND_INITIALIZER;
@@ -137,39 +148,79 @@ void *monitor_thread(void* arg)
 
     return 0;
 }
+static long total_dir_size(char *dirname)
+{
+    DIR *dir = opendir(dirname);
+    if (dir == 0)
+        return 0;
+
+    struct dirent *dit;
+    struct stat st;
+    long size = 0;
+    long total_size = 0;
+    char filePath[1024];
+
+    while ((dit = readdir(dir)) != NULL)
+    {
+        if ((strcmp(dit->d_name, ".") == 0) || (strcmp(dit->d_name, "..") == 0))
+            continue;
+
+        sprintf(filePath, "%s/%s", dirname, dit->d_name);
+        if (lstat(filePath, &st) != 0)
+            continue;
+        size = st.st_size;
+
+        if (S_ISDIR(st.st_mode))
+        {
+            long dir_size = total_dir_size(filePath) + size;
+            total_size += dir_size;
+        }
+        else
+        {
+            total_size += size;
+        }
+    }
+    return total_size;
+}
 
 void *disk_service_thread(void* arg)
 {
     char *s = arg;
-    FILE* apipe;
-    char buf[1024];
-    char cmd[]="df -h ./" ;
-    int mqretcode;
-    toy_msg_t msg;
+    int inotifyFd, wd, j;
+    char buf[BUF_LEN] __attribute__ ((aligned(8)));
+    ssize_t numRead;
+    char *p;
+    struct inotify_event *event;
+    char *directory = TOY_TEST_FS;
+    int total_size;
 
     printf("%s", s);
+    inotifyFd=inotify_init();
+    if(inotifyFd==-1)
+         perror("inotify_init");
 
+    wd=inotidy_add_watch(inotifyFD,argv[j],IN_ALL_EVENTS);
+    if(wd==-1)
+         perror("add_watch");
+
+
+    // 여기에 구현
     while (1) {
-        mqretcode = (int)mq_receive(disk_queue, (void *)&msg, sizeof(toy_msg_t), 0);
-        assert(mqretcode >= 0);
-        printf("disk_service_thread: 메시지가 도착했습니다.\n");
-        printf("msg.type: %d\n", msg.type);
-        printf("msg.param1: %d\n", msg.param1);
-        printf("msg.param2: %d\n", msg.param2);
+	numRead=read(inotifyFD,buf,BUF_LEN);
+	if(numRead==0)
+		perror("read return 0");
 
-        /* popen 사용하여 10초마다 disk 잔여량 출력
-         * popen으로 shell을 실행하면 성능과 보안 문제가 있음
-         * 향후 파일 관련 시스템 콜 시간에 개선,
-         * 하지만 가끔 빠르게 테스트 프로그램 또는 프로토 타입 시스템 작성 시 유용
-         */
-        apipe = popen(cmd, "r");
-        while (fgets( buf, 1024, apipe) ) {
-            printf("%s", buf);
-        }
-        pclose(apipe);
+	if (numRead==-1)
+		perror("read");
 
+	printf("Read %ld bytes from inotify fd\n", (long)numRead);
+        total_size = total_dir_size(directory);
+
+        printf("Total directory size : %d\n", total_size);
+	
+
+        sleep(1);
     }
-
     return 0;
 }
 
