@@ -14,6 +14,8 @@
 #include <web_server.h>
 #include <camera_HAL.h>
 #include <toy_message.h>
+#include <shared_memory.h>
+
 
 pthread_mutex_t system_loop_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  system_loop_cond  = PTHREAD_COND_INITIALIZER;
@@ -28,6 +30,9 @@ static int toy_timer = 0;
 pthread_mutex_t toy_timer_mutex = PTHREAD_MUTEX_INITIALIZER;
 static sem_t global_timer_sem;
 static bool global_timer_stopped;
+
+static shm_sensor_t *the_sensor_info = NULL;
+void set_periodic_timer(long sec_delay, long usec_delay);
 
 static void timer_expire_signal_handler()
 {
@@ -109,6 +114,7 @@ void *monitor_thread(void* arg)
     char *s = arg;
     int mqretcode;
     toy_msg_t msg;
+    int shmid;
 
     printf("%s", s);
 
@@ -119,6 +125,14 @@ void *monitor_thread(void* arg)
         printf("msg.type: %d\n", msg.type);
         printf("msg.param1: %d\n", msg.param1);
         printf("msg.param2: %d\n", msg.param2);
+	if(msg.type==SENSOR_DATA){
+		shmid=msg.param1;
+		the_sensor_info = toy_shm_attach(shmid);
+           	 printf("sensor temp: %d\n", the_sensor_info->temp);
+           	 printf("sensor info: %d\n", the_sensor_info->press);
+            	printf("sensor humidity: %d\n", the_sensor_info->humidity);
+            	toy_shm_detach(the_sensor_info);
+	}
     }
 
     return 0;
