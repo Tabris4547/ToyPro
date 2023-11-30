@@ -199,14 +199,14 @@ void *disk_service_thread(void* arg)
     if(inotifyFd==-1)
          perror("inotify_init");
 
-    wd=inotidy_add_watch(inotifyFD,argv[j],IN_ALL_EVENTS);
+    wd=inotify_add_watch(inotifyFd,directory,IN_ALL_EVENTS);
     if(wd==-1)
          perror("add_watch");
 
 
     // 여기에 구현
     while (1) {
-	numRead=read(inotifyFD,buf,BUF_LEN);
+	numRead=read(inotifyFd,buf,BUF_LEN);
 	if(numRead==0)
 		perror("read return 0");
 

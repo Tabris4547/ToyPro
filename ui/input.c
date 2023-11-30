@@ -26,6 +26,8 @@
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
 #define TOY_BUFFSIZE 1024
+#define DUMP_STATE 2
+
 
 typedef struct _sig_ucontext {
     unsigned long uc_flags;
@@ -119,6 +121,7 @@ int toy_mutex(char **args);
 int toy_shell(char **args);
 int toy_message_queue(char **args);
 int toy_read_elf_header(char **args);
+int toy_dump_state(char **args);
 int toy_exit(char **args);
 
 char *builtin_str[] = {
@@ -127,6 +130,7 @@ char *builtin_str[] = {
     "sh",
     "mq",
     "elf",
+    "dump",
     "exit"
 };
 
@@ -136,6 +140,7 @@ int (*builtin_func[]) (char **) = {
     &toy_shell,
     &toy_message_queue,
     &toy_read_elf_header,
+    &toy_dump_state,
     &toy_exit
 };
 
@@ -214,6 +219,42 @@ int toy_read_elf_header(char **args)
     printf("Program header table file offset : %ld\n", map->e_phoff);
 
 
+    return 1;
+}
+void read_dump(char *fileName)
+{
+	char buf[30000];
+	int fd=open(fileName,O_RDONLY);
+	if(fd==NULL){
+		perror("error while opening");
+		exit(-1);
+	}
+	while(1)
+	{
+		int readByte=read(fd,buf,sizeof(buf));
+		if(readByte>0)
+			buf[readByte-1]='n';
+		if (readByte<=0)
+			break;
+	}
+	printf("=====%s begin=======\n\n",fileName);
+	printf("%s\n",buf);
+	printf("=====%s ends =======\n",fileName);
+}
+int toy_dump_state(char **args)
+{
+	read_dump("/proc/version");
+	read_dump("/proc/meminfo");
+	read_dump("/proc/vmstat");
+	read_dump("/proc/vmallocinfo");
+	read_dump("/proc/slabinfo");
+	read_dump("/proc/zoneinfo");
+	read_dump("/proc/pagetypeinfo");
+	read_dump("/proc/buddyinfo");
+	read_dump("/proc/net/dev");
+	read_dump("/proc/net/route");
+	read_dump("/proc/net/ipv6_route");
+	read_dump("/proc/interrupts");
     return 1;
 }
 
