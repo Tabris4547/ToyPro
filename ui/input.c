@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <seccomp.h>
 
 #include <system_server.h>
 #include <gui.h>
@@ -22,12 +23,12 @@
 #include <execinfo.h>
 #include <toy_message.h>
 #include <shared_memory.h>
+#include <dump_state.h>
 
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
 #define TOY_BUFFSIZE 1024
 #define DUMP_STATE 2
-
 
 typedef struct _sig_ucontext {
     unsigned long uc_flags;
@@ -94,7 +95,7 @@ void *sensor_thread(void* arg)
     printf("%s", s);
 
     while (1) {
-        posix_sleep_ms(5000);
+        posix_sleep_ms(10000);
         // 현재 고도/온도/기압 정보를  SYS V shared memory에 저장 후
         // monitor thread에 메시지 전송한다.
         if (the_sensor_info != NULL) {
@@ -122,8 +123,8 @@ int toy_shell(char **args);
 int toy_message_queue(char **args);
 int toy_read_elf_header(char **args);
 int toy_dump_state(char **args);
+int toy_mincore(char **args);
 int toy_exit(char **args);
-
 char *builtin_str[] = {
     "send",
     "mu",
@@ -131,6 +132,7 @@ char *builtin_str[] = {
     "mq",
     "elf",
     "dump",
+    "mincore",
     "exit"
 };
 
@@ -141,6 +143,7 @@ int (*builtin_func[]) (char **) = {
     &toy_message_queue,
     &toy_read_elf_header,
     &toy_dump_state,
+    &toy_mincore,
     &toy_exit
 };
 
@@ -208,57 +211,53 @@ int toy_read_elf_header(char **args)
      * fread 사용 X
      */
 
-    if(fstat(in_fd,&st)==-1)
-        perror("fstat");
-    map=mmap(NULL,st.st_size,PROT_READ,MAP_PRIVATE,in_fd,0);
-    printf("real size: %ld\n", st.st_size);
-    printf("Object file type : %d\n", map->e_type);
-    printf("Architecture : %d\n", map->e_machine);
-    printf("Object file version : %d\n", map->e_version);
-    printf("Entry point virtual address : %ld\n", map->e_entry);
-    printf("Program header table file offset : %ld\n", map->e_phoff);
-
+    if (!fstat(in_fd, &st)) {
+        contents_sz = st.st_size;
+        if (!contents_sz) {
+            printf("./sample/sample.elf is empty\n");
+            return 1;
+        }
+        printf("real size: %ld\n", contents_sz);
+        map = (Elf64Hdr *)mmap(NULL, contents_sz, PROT_READ, MAP_PRIVATE, in_fd, 0);
+        printf("Object file type : %d\n", map->e_type);
+        printf("Architecture : %d\n", map->e_machine);
+        printf("Object file version : %d\n", map->e_version);
+        printf("Entry point virtual address : %ld\n", map->e_entry);
+        printf("Program header table file offset : %ld\n", map->e_phoff);
+        munmap(map, contents_sz);
+    }
 
     return 1;
 }
-void read_dump(char *fileName)
-{
-	char buf[30000];
-	int fd=open(fileName,O_RDONLY);
-	if(fd==NULL){
-		perror("error while opening");
-		exit(-1);
-	}
-	while(1)
-	{
-		int readByte=read(fd,buf,sizeof(buf));
-		if(readByte>0)
-			buf[readByte-1]='n';
-		if (readByte<=0)
-			break;
-	}
-	printf("=====%s begin=======\n\n",fileName);
-	printf("%s\n",buf);
-	printf("=====%s ends =======\n",fileName);
-}
+
 int toy_dump_state(char **args)
 {
-	read_dump("/proc/version");
-	read_dump("/proc/meminfo");
-	read_dump("/proc/vmstat");
-	read_dump("/proc/vmallocinfo");
-	read_dump("/proc/slabinfo");
-	read_dump("/proc/zoneinfo");
-	read_dump("/proc/pagetypeinfo");
-	read_dump("/proc/buddyinfo");
-	read_dump("/proc/net/dev");
-	read_dump("/proc/net/route");
-	read_dump("/proc/net/ipv6_route");
-	read_dump("/proc/interrupts");
+    int mqretcode;
+    toy_msg_t msg;
+
+    msg.type = DUMP_STATE;
+    msg.param1 = 0;
+    msg.param2 = 0;
+    mqretcode = mq_send(camera_queue, (char *)&msg, sizeof(msg), 0);
+    assert(mqretcode == 0);
+    mqretcode = mq_send(monitor_queue, (char *)&msg, sizeof(msg), 0);
+    assert(mqretcode == 0);
+
     return 1;
 }
 
-
+int toy_mincore(char **args)
+{
+    unsigned char vec[20];
+    int res;
+    size_t page = sysconf(_SC_PAGESIZE);
+    void *addr = mmap(NULL, 20 * page, PROT_READ | PROT_WRITE,
+                    MAP_NORESERVE | MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+    res = mincore(addr, 10 * page, vec);
+    assert(res == 0);
+    printf("mincore do!\n");
+    return 1;
+}
 int toy_exit(char **args)
 {
     return 0;
@@ -395,7 +394,26 @@ int input()
     sa.sa_sigaction = segfault_handler;
 
     sigaction(SIGSEGV, &sa, NULL); /* ignore whether it works or not */
+    
+    scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_ALLOW);
+    if (ctx == NULL)
+        perror("seccomp_init() failed");
 
+    /* Cause clone() and fork() to fail, each with different errors */
+
+    int rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(clone), 0);
+    if (rc < 0)
+        perror( "seccomp_rule_add");
+
+
+    seccomp_export_pfc(ctx, 5);
+    seccomp_export_bpf(ctx, 6);
+
+    /* Install the seccomp filter into the kernel */
+
+    rc = seccomp_load(ctx);
+    if (rc < 0)
+        perror( "seccomp_load");
     /* 센서 정보를 공유하기 위한, 시스템 V 공유 메모리를 생성한다 */
     the_sensor_info = (shm_sensor_t *)toy_shm_create(SHM_KEY_SENSOR, sizeof(shm_sensor_t));
     if ( the_sensor_info == (void *)-1 ) {

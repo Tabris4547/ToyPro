@@ -22,9 +22,11 @@
 #include <gui.h>
 #include <input.h>
 #include <web_server.h>
-#include <camera_HAL.h>
 #include <toy_message.h>
 #include <shared_memory.h>
+#include <dump_state.h>
+#include <hardware.h>
+
 #define BUF_LEN 1024
 #define TOY_TEST_FS "./fs"
 
@@ -51,10 +53,7 @@ static void timer_expire_signal_handler()
     // man signal 확인
     // sem_post는 async-signal-safe function
     // 여기서는 sem_post 사용
-    //
-    sem_getvalue(&global_timer_sem,1);
     sem_post(&global_timer_sem);
-
 }
 
 static void system_timeout_handler()
@@ -62,7 +61,6 @@ static void system_timeout_handler()
     // 여기는 signal hander가 아니기 때문에 안전하게 mutex lock 사용 가능
     pthread_mutex_lock(&toy_timer_mutex);
     toy_timer++;
-    printf("toy_timer: %d\n", toy_timer);
     pthread_mutex_unlock(&toy_timer_mutex);
 }
 
@@ -72,9 +70,17 @@ static void *timer_thread(void *not_used)
     set_periodic_timer(1, 1);
 
 	while (!global_timer_stopped) {
+		int rc = sem_wait(&global_timer_sem);
+		if (rc == -1 && errno == EINTR) {
+		    continue;
+		}
+
+		if (rc == -1) {
+		    perror("sem_wait");
+		    exit(-1);
+		}
         // 아래 sleep을 sem_wait 함수를 사용하여 동기화 처리
         // sleep(1);
-		sem_wait(&global_timer_sem);
 		system_timeout_handler();
 	}
 	return 0;
@@ -120,6 +126,9 @@ void *watchdog_thread(void* arg)
     return 0;
 }
 
+#define SENSOR_DATA 1
+#define DUMP_STATE 2
+
 void *monitor_thread(void* arg)
 {
     char *s = arg;
@@ -136,19 +145,25 @@ void *monitor_thread(void* arg)
         printf("msg.type: %d\n", msg.type);
         printf("msg.param1: %d\n", msg.param1);
         printf("msg.param2: %d\n", msg.param2);
-	if(msg.type==SENSOR_DATA){
-		shmid=msg.param1;
-		the_sensor_info = toy_shm_attach(shmid);
-           	 printf("sensor temp: %d\n", the_sensor_info->temp);
-           	 printf("sensor info: %d\n", the_sensor_info->press);
-            	printf("sensor humidity: %d\n", the_sensor_info->humidity);
-            	toy_shm_detach(the_sensor_info);
-	}
+        if (msg.type == SENSOR_DATA) {
+            shmid = msg.param1;
+            the_sensor_info = toy_shm_attach(shmid);
+            printf("sensor temp: %d\n", the_sensor_info->temp);
+            printf("sensor info: %d\n", the_sensor_info->press);
+            printf("sensor humidity: %d\n", the_sensor_info->humidity);
+            toy_shm_detach(the_sensor_info);
+        } else if (msg.type == DUMP_STATE) {
+            dumpstate();
+        } else {
+            printf("monitor_thread: unknown message. xxx\n");
+        }
     }
 
     return 0;
 }
-static long total_dir_size(char *dirname)
+
+// https://stackoverflow.com/questions/21618260/how-to-get-total-size-of-subdirectories-in-c
+static long get_directory_size(char *dirname)
 {
     DIR *dir = opendir(dirname);
     if (dir == 0)
@@ -160,9 +175,8 @@ static long total_dir_size(char *dirname)
     long total_size = 0;
     char filePath[1024];
 
-    while ((dit = readdir(dir)) != NULL)
-    {
-        if ((strcmp(dit->d_name, ".") == 0) || (strcmp(dit->d_name, "..") == 0))
+    while ((dit = readdir(dir)) != NULL) {
+        if ( (strcmp(dit->d_name, ".") == 0) || (strcmp(dit->d_name, "..") == 0) )
             continue;
 
         sprintf(filePath, "%s/%s", dirname, dit->d_name);
@@ -170,18 +184,16 @@ static long total_dir_size(char *dirname)
             continue;
         size = st.st_size;
 
-        if (S_ISDIR(st.st_mode))
-        {
-            long dir_size = total_dir_size(filePath) + size;
+        if (S_ISDIR(st.st_mode)) {
+            long dir_size = get_directory_size(filePath) + size;
             total_size += dir_size;
-        }
-        else
-        {
+        } else {
             total_size += size;
         }
     }
     return total_size;
 }
+
 
 void *disk_service_thread(void* arg)
 {
@@ -195,32 +207,33 @@ void *disk_service_thread(void* arg)
     int total_size;
 
     printf("%s", s);
-    inotifyFd=inotify_init();
-    if(inotifyFd==-1)
-         perror("inotify_init");
 
-    wd=inotify_add_watch(inotifyFd,directory,IN_ALL_EVENTS);
-    if(wd==-1)
-         perror("add_watch");
+    inotifyFd = inotify_init();                 /* Create inotify instance */
+    if (inotifyFd == -1)
+        return 0;
 
+    wd = inotify_add_watch(inotifyFd, TOY_TEST_FS, IN_CREATE);
+    if (wd == -1)
+        return 0;
 
-    // 여기에 구현
-    while (1) {
-	numRead=read(inotifyFd,buf,BUF_LEN);
-	if(numRead==0)
-		perror("read return 0");
+    for (;;) {                                  /* Read events forever */
+        numRead = read(inotifyFd, buf, BUF_LEN);
+        if (numRead == 0) {
+            printf("read() from inotify fd returned 0!");
+            return 0;
+        }
 
-	if (numRead==-1)
-		perror("read");
+        if (numRead == -1)
+            return 0;
 
-	printf("Read %ld bytes from inotify fd\n", (long)numRead);
-        total_size = total_dir_size(directory);
-
-        printf("Total directory size : %d\n", total_size);
-	
-
-        sleep(1);
+        for (p = buf; p < buf + numRead; ) {
+            event = (struct inotify_event *) p;
+            p += sizeof(struct inotify_event) + event->len;
+        }
+        total_size = get_directory_size(TOY_TEST_FS);
+        printf("directory size: %d\n", total_size);
     }
+
     return 0;
 }
 
@@ -231,10 +244,17 @@ void *camera_service_thread(void* arg)
     char *s = arg;
     int mqretcode;
     toy_msg_t msg;
+    hw_module_t *module = NULL;
+    int res;
 
     printf("%s", s);
-
-   toy_camera_open();
+    // 여기서 동적으로 심볼을 로딩 합니다.
+    res = hw_get_camera_module((const hw_module_t **)&module);
+    assert(res == 0);
+    printf("Camera module name: %s\n", module->name);
+    printf("Camera module tag: %d\n", module->tag);
+    printf("Camera module id: %s\n", module->id);
+    module->open();
 
     while (1) {
         mqretcode = (int)mq_receive(camera_queue, (void *)&msg, sizeof(toy_msg_t), 0);
@@ -244,7 +264,11 @@ void *camera_service_thread(void* arg)
         printf("msg.param1: %d\n", msg.param1);
         printf("msg.param2: %d\n", msg.param2);
         if (msg.type == CAMERA_TAKE_PICTURE) {
-            toy_camera_take_picture();
+            module->take_picture();
+        } else if (msg.type == DUMP_STATE) {
+            module->dump();
+        } else {
+            printf("camera_service_thread: unknown message. xxx\n");
         }
     }
 
@@ -253,7 +277,6 @@ void *camera_service_thread(void* arg)
 
 void signal_exit(void)
 {
-    /* 여기에 구현하세요..  종료 메시지를 보내도록.. */
     pthread_mutex_lock(&system_loop_mutex);
     system_loop_exit = true;
     pthread_cond_broadcast(&system_loop_cond);
@@ -272,7 +295,6 @@ int system_server()
 
     printf("나 system_server 프로세스!\n");
 
-
     /* 메시지 큐를 오픈한다. */
     watchdog_queue = mq_open("/watchdog_queue", O_RDWR);
     assert(watchdog_queue != -1);
@@ -282,9 +304,6 @@ int system_server()
     assert(disk_queue != -1);
     camera_queue = mq_open("/camera_queue", O_RDWR);
     assert(camera_queue != -1);
-
-    //세마포어 초기화
-    sem_init(&global_timer_sem,0,0);
 
     /* 스레드를 생성한다. */
     retcode = pthread_create(&watchdog_thread_tid, NULL, watchdog_thread, "watchdog thread\n");
